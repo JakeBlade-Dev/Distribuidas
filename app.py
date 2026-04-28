@@ -2,13 +2,13 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from flask import Flask, jsonify, request
-from mssql_python import connect
 from flask_cors import CORS
+from mssql_python import connect
 
 app = Flask(__name__)
 
 # ==============================
-# 🌐 CORS (CONFIGURACIÓN CORRECTA)
+# 🌐 CORS (CORRECTO)
 # ==============================
 CORS(
     app,
@@ -26,7 +26,7 @@ def after_request(response):
 
 
 # ==============================
-# 🔌 CONEXIÓN A SQL SERVER
+# 🔌 CONEXIÓN SQL SERVER
 # ==============================
 def get_connection():
     server = os.getenv("DB_SERVER")
@@ -36,7 +36,7 @@ def get_connection():
     port = os.getenv("DB_PORT", "1433")
 
     if not server or not database or not username or not password:
-        raise ValueError("Faltan variables de entorno de la base de datos")
+        raise ValueError("Faltan variables de entorno DB")
 
     connection_string = (
         f"Server=tcp:{server},{port};"
@@ -84,20 +84,21 @@ def home():
 
 
 # ==============================
-# 📩 ENVIAR CORREO (CORS OK)
+# 📩 ENVIAR CORREO (JSON + FORM)
 # ==============================
 @app.route("/enviar-alerta", methods=["POST", "OPTIONS"])
 def enviar_alerta():
 
-    # 🔥 RESPUESTA AL PREFLIGHT
+    # Preflight CORS
     if request.method == "OPTIONS":
         return jsonify({"success": True}), 200
 
     try:
-        data = request.get_json()
-
-        if not data:
-            return jsonify({"success": False, "message": "No JSON recibido"}), 400
+        # 🔥 soporta JSON y formulario
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
 
         destino = data.get("to")
         asunto = data.get("subject")
