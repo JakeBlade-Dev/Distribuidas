@@ -1,10 +1,16 @@
 import os
-from flask import Flask, jsonify
+import smtplib
+from email.mime.text import MIMEText
+from flask import Flask, jsonify, request
 from mssql_python import connect
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)  # Permite peticiones desde WordPress
 
-
+# ==============================
+# 🔌 CONEXIÓN A SQL SERVER
+# ==============================
 def get_connection():
     server = os.getenv("DB_SERVER")
     database = os.getenv("DB_DATABASE")
@@ -34,6 +40,30 @@ def get_connection():
     return connect(connection_string)
 
 
+# ==============================
+# ✉️ ENVÍO DE CORREO
+# ==============================
+def enviar_correo_alerta(asunto, mensaje, destino):
+    remitente = os.getenv("EMAIL_USER")
+    password = os.getenv("EMAIL_PASS")
+
+    if not remitente or not password:
+        raise ValueError("Faltan credenciales de correo")
+
+    msg = MIMEText(mensaje)
+    msg["Subject"] = asunto
+    msg["From"] = remitente
+    msg["To"] = destino
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(remitente, password)
+        server.send_message(msg)
+
+
+# ==============================
+# 🏠 HOME
+# ==============================
 @app.route("/")
 def home():
     return jsonify({
@@ -41,29 +71,49 @@ def home():
         "message": "API Flask funcionando correctamente en Render"
     })
 
+
+# ==============================
+# 📩 ENVIAR CORREO
+# ==============================
 @app.route("/enviar-alerta", methods=["POST"])
 def enviar_alerta():
-try:
-data = request.get_json()
-destino = data.get("to")
-asunto = data.get("subject")
-mensaje = data.get("message")
-if not destino or not asunto or not mensaje:
-return jsonify({
-"success": False,
-"message": "Faltan datos"
-}), 400
-enviar_correo_alerta(asunto, mensaje, destino)
-return jsonify({
-"success": True,
-"message": "Correo enviado"
-})
-except Exception as e:
-return jsonify({
-"success": False,
-"error": str(e)
-}), 500
+    try:
+        data = request.get_json()
 
+        destino = data.get("to")
+        asunto = data.get("subject")
+        mensaje = data.get("message")
+
+        if not destino or not asunto or not mensaje:
+            return jsonify({
+                "success": False,
+                "message": "Faltan datos"
+            }), 400
+
+        # Validación simple
+        if "@" not in destino:
+            return jsonify({
+                "success": False,
+                "message": "Correo inválido"
+            }), 400
+
+        enviar_correo_alerta(asunto, mensaje, destino)
+
+        return jsonify({
+            "success": True,
+            "message": "Correo enviado correctamente"
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ==============================
+# 🧪 DEBUG VARIABLES
+# ==============================
 @app.route("/debug-env")
 def debug_env():
     return jsonify({
@@ -72,9 +122,14 @@ def debug_env():
         "DB_USERNAME": os.getenv("DB_USERNAME"),
         "DB_PASSWORD_EXISTS": bool(os.getenv("DB_PASSWORD")),
         "DB_PORT": os.getenv("DB_PORT"),
+        "EMAIL_USER": os.getenv("EMAIL_USER"),
+        "EMAIL_PASS_EXISTS": bool(os.getenv("EMAIL_PASS"))
     })
 
 
+# ==============================
+# 🧪 TEST DB
+# ==============================
 @app.route("/test-db")
 def test_db():
     conn = None
@@ -82,20 +137,21 @@ def test_db():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT GETDATE() AS fecha_servidor")
+
+        cursor.execute("SELECT GETDATE()")
         row = cursor.fetchone()
 
         return jsonify({
             "success": True,
-            "message": "Conexión a SQL Server exitosa",
             "server_date": str(row[0])
         })
+
     except Exception as e:
         return jsonify({
             "success": False,
-            "message": "Error al conectar con SQL Server",
             "error": str(e)
         }), 500
+
     finally:
         if cursor:
             cursor.close()
@@ -103,10 +159,14 @@ def test_db():
             conn.close()
 
 
+# ==============================
+# 📦 PRODUCTOS
+# ==============================
 @app.route("/productos")
 def listar_productos():
     conn = None
     cursor = None
+
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -116,6 +176,7 @@ def listar_productos():
             FROM productos
             ORDER BY id DESC
         """)
+
         rows = cursor.fetchall()
 
         data = []
@@ -123,7 +184,7 @@ def listar_productos():
             data.append({
                 "id": row[0],
                 "nombre": row[1],
-                "precio": float(row[2]) if row[2] is not None else None,
+                "precio": float(row[2]) if row[2] else None,
                 "imagen_url": row[3],
             })
 
@@ -131,12 +192,13 @@ def listar_productos():
             "success": True,
             "data": data
         })
+
     except Exception as e:
         return jsonify({
             "success": False,
-            "message": "Error al consultar productos",
             "error": str(e)
         }), 500
+
     finally:
         if cursor:
             cursor.close()
@@ -144,6 +206,9 @@ def listar_productos():
             conn.close()
 
 
+# ==============================
+# 🚀 RUN
+# ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
