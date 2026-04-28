@@ -6,7 +6,19 @@ from mssql_python import connect
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # Permite peticiones desde WordPress
+
+# ==============================
+# 🌐 CORS (CORREGIDO)
+# ==============================
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    return response
+
 
 # ==============================
 # 🔌 CONEXIÓN A SQL SERVER
@@ -75,8 +87,13 @@ def home():
 # ==============================
 # 📩 ENVIAR CORREO
 # ==============================
-@app.route("/enviar-alerta", methods=["POST"])
+@app.route("/enviar-alerta", methods=["POST", "OPTIONS"])
 def enviar_alerta():
+
+    # Manejo explícito de preflight
+    if request.method == "OPTIONS":
+        return jsonify({"success": True})
+
     try:
         data = request.get_json()
 
@@ -90,7 +107,6 @@ def enviar_alerta():
                 "message": "Faltan datos"
             }), 400
 
-        # Validación simple
         if "@" not in destino:
             return jsonify({
                 "success": False,
