@@ -8,15 +8,20 @@ from flask_cors import CORS
 app = Flask(__name__)
 
 # ==============================
-# 🌐 CORS (CORREGIDO)
+# 🌐 CORS (CONFIGURACIÓN CORRECTA)
 # ==============================
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(
+    app,
+    resources={r"/*": {"origins": "*"}},
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "OPTIONS"]
+)
 
 @app.after_request
 def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
 
@@ -30,14 +35,8 @@ def get_connection():
     password = os.getenv("DB_PASSWORD")
     port = os.getenv("DB_PORT", "1433")
 
-    if not server:
-        raise ValueError("Falta DB_SERVER")
-    if not database:
-        raise ValueError("Falta DB_DATABASE")
-    if not username:
-        raise ValueError("Falta DB_USERNAME")
-    if not password:
-        raise ValueError("Falta DB_PASSWORD")
+    if not server or not database or not username or not password:
+        raise ValueError("Faltan variables de entorno de la base de datos")
 
     connection_string = (
         f"Server=tcp:{server},{port};"
@@ -80,22 +79,25 @@ def enviar_correo_alerta(asunto, mensaje, destino):
 def home():
     return jsonify({
         "success": True,
-        "message": "API Flask funcionando correctamente en Render"
+        "message": "API Flask funcionando correctamente"
     })
 
 
 # ==============================
-# 📩 ENVIAR CORREO
+# 📩 ENVIAR CORREO (CORS OK)
 # ==============================
 @app.route("/enviar-alerta", methods=["POST", "OPTIONS"])
 def enviar_alerta():
 
-    # Manejo explícito de preflight
+    # 🔥 RESPUESTA AL PREFLIGHT
     if request.method == "OPTIONS":
-        return jsonify({"success": True})
+        return jsonify({"success": True}), 200
 
     try:
         data = request.get_json()
+
+        if not data:
+            return jsonify({"success": False, "message": "No JSON recibido"}), 400
 
         destino = data.get("to")
         asunto = data.get("subject")
@@ -128,98 +130,15 @@ def enviar_alerta():
 
 
 # ==============================
-# 🧪 DEBUG VARIABLES
+# 🧪 DEBUG
 # ==============================
 @app.route("/debug-env")
 def debug_env():
     return jsonify({
-        "DB_SERVER": os.getenv("DB_SERVER"),
-        "DB_DATABASE": os.getenv("DB_DATABASE"),
-        "DB_USERNAME": os.getenv("DB_USERNAME"),
-        "DB_PASSWORD_EXISTS": bool(os.getenv("DB_PASSWORD")),
-        "DB_PORT": os.getenv("DB_PORT"),
         "EMAIL_USER": os.getenv("EMAIL_USER"),
-        "EMAIL_PASS_EXISTS": bool(os.getenv("EMAIL_PASS"))
+        "EMAIL_PASS_EXISTS": bool(os.getenv("EMAIL_PASS")),
+        "DB_SERVER": os.getenv("DB_SERVER"),
     })
-
-
-# ==============================
-# 🧪 TEST DB
-# ==============================
-@app.route("/test-db")
-def test_db():
-    conn = None
-    cursor = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT GETDATE()")
-        row = cursor.fetchone()
-
-        return jsonify({
-            "success": True,
-            "server_date": str(row[0])
-        })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-
-# ==============================
-# 📦 PRODUCTOS
-# ==============================
-@app.route("/productos")
-def listar_productos():
-    conn = None
-    cursor = None
-
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT TOP 20 id, nombre, precio, imagen_url
-            FROM productos
-            ORDER BY id DESC
-        """)
-
-        rows = cursor.fetchall()
-
-        data = []
-        for row in rows:
-            data.append({
-                "id": row[0],
-                "nombre": row[1],
-                "precio": float(row[2]) if row[2] else None,
-                "imagen_url": row[3],
-            })
-
-        return jsonify({
-            "success": True,
-            "data": data
-        })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
 
 
 # ==============================
