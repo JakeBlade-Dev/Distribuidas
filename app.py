@@ -1,33 +1,18 @@
 import os
 import smtplib
-from email.mime.text import MIMEText
+import resend
+import threading
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from mssql_python import connect
-
-app = Flask(__name__)
-
-# ==============================
-# 🌐 CORS (CORRECTO)
-# ==============================
-CORS(
-    app,
-    resources={r"/*": {"origins": "*"}},
-    allow_headers=["Content-Type", "Authorization"],
-    methods=["GET", "POST", "OPTIONS"]
-)
-
-@app.after_request
-def after_request(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    return response
+from email.mime.text import MIMEText
 
 
-# ==============================
-# 🔌 CONEXIÓN SQL SERVER
-# ==============================
+app = Flask(__name__, static_url_path='/Imagenes', static_folder='Imagenes')
+CORS(app)  # Habilitar CORS para todas las rutas
+
+
 def get_connection():
     server = os.getenv("DB_SERVER")
     database = os.getenv("DB_DATABASE")
@@ -35,8 +20,14 @@ def get_connection():
     password = os.getenv("DB_PASSWORD")
     port = os.getenv("DB_PORT", "1433")
 
-    if not server or not database or not username or not password:
-        raise ValueError("Faltan variables de entorno DB")
+    if not server:
+        raise ValueError("Falta DB_SERVER")
+    if not database:
+        raise ValueError("Falta DB_DATABASE")
+    if not username:
+        raise ValueError("Falta DB_USERNAME")
+    if not password:
+        raise ValueError("Falta DB_PASSWORD")
 
     connection_string = (
         f"Server=tcp:{server},{port};"
@@ -51,55 +42,98 @@ def get_connection():
     return connect(connection_string)
 
 
-# ==============================
-# ✉️ ENVÍO DE CORREO
-# ==============================
-def enviar_correo_alerta(asunto, mensaje, destino):
-    remitente = os.getenv("EMAIL_USER")
-    password = os.getenv("EMAIL_PASS")
-
-    if not remitente or not password:
-        raise ValueError("Faltan credenciales de correo")
-
-    msg = MIMEText(mensaje)
-    msg["Subject"] = asunto
-    msg["From"] = remitente
-    msg["To"] = destino
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(remitente, password)
-        server.send_message(msg)
-
-
-# ==============================
-# 🏠 HOME
-# ==============================
 @app.route("/")
 def home():
     return jsonify({
         "success": True,
-        "message": "API Flask funcionando correctamente"
+        "message": "API Flask funcionando correctamente en Render"
     })
 
 
-# ==============================
-# 📩 ENVIAR CORREO (JSON + FORM)
-# ==============================
-@app.route("/enviar-alerta", methods=["POST", "OPTIONS"])
-def enviar_alerta():
+@app.route("/debug-env")
+def debug_env():
+    return jsonify({
+        "DB_SERVER": os.getenv("DB_SERVER"),
+        "DB_DATABASE": os.getenv("DB_DATABASE"),
+        "DB_USERNAME": os.getenv("DB_USERNAME"),
+        "DB_PASSWORD_EXISTS": bool(os.getenv("DB_PASSWORD")),
+        "DB_PORT": os.getenv("DB_PORT"),
+    })
 
-    # Preflight CORS
-    if request.method == "OPTIONS":
-        return jsonify({"success": True}), 200
 
+@app.route("/test-db")
+def test_db():
+    conn = None
+    cursor = None
     try:
-        # 🔥 soporta JSON y formulario
-        if request.is_json:
-            data = request.get_json()
-        else:
-            data = request.form
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT GETDATE() AS fecha_servidor")
+        row = cursor.fetchone()
 
+        return jsonify({
+            "success": True,
+            "message": "Conexión a SQL Server exitosa",
+            "server_date": str(row[0])
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": "Error al conectar con SQL Server",
+            "error": str(e)
+        }), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@app.route("/productos")
+def listar_productos():
+    conn = None
+    cursor = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT TOP 20 id, nombre, precio, imageurl
+            FROM productos
+            ORDER BY id DESC
+        """)
+        rows = cursor.fetchall()
+
+        data = []
+        for row in rows:
+            data.append({
+                "id": row[0],
+                "nombre": row[1],
+                "precio": float(row[2]) if row[2] is not None else None,
+                "imagen_url": row[3],
+            })
+
+        return jsonify({
+            "success": True,
+            "data": data
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": "Error al consultar productos",
+            "error": str(e)
+        }), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+            
+            
+@app.route("/enviar-alerta", methods=["POST"])
+def enviar_alerta():
+    try:
+        data = request.get_json()
         destino = data.get("to")
         asunto = data.get("subject")
         mensaje = data.get("message")
@@ -110,41 +144,84 @@ def enviar_alerta():
                 "message": "Faltan datos"
             }), 400
 
-        if "@" not in destino:
-            return jsonify({
-                "success": False,
-                "message": "Correo inválido"
-            }), 400
-
         enviar_correo_alerta(asunto, mensaje, destino)
-
         return jsonify({
             "success": True,
             "message": "Correo enviado correctamente"
         })
+    except ValueError as ve:
+        return jsonify({
+            "success": False,
+            "error": str(ve)
+        }), 400
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "details": traceback.format_exc()
+        }), 500
+
+def enviar_correo_alerta(asunto, mensaje, destino):
+    email_user = os.getenv("EMAIL_USER")
+    email_password = os.getenv("EMAIL_PASSWORD")
+
+    if not email_user:
+        raise ValueError("Falta EMAIL_USER")
+    if not email_password:
+        raise ValueError("Falta EMAIL_PASSWORD")
+
+    msg = MIMEText(mensaje, "plain", "utf-8")
+    msg["Subject"] = asunto
+    msg["From"] = email_user
+    msg["To"] = destino
+
+    servidor = smtplib.SMTP("smtp.gmail.com", 587)
+    servidor.starttls()
+    servidor.login(email_user, email_password)
+    servidor.sendmail(email_user, [destino], msg.as_string())
+    servidor.quit()
+    
+# Configurar API Key
+resend.api_key = os.environ["RESEND_API_KEY"]
+FROM_EMAIL = os.environ.get("MAIL_RESEND", "onboarding@resend.dev")
+
+# Función de envío
+def enviar_correo_resend(destino, asunto, mensaje):
+    resend.Emails.send({
+        "from": FROM_EMAIL,
+        "to": [destino],
+        "subject": asunto,
+        "html": f"<p>{mensaje}</p>"
+    })
+
+# Endpoint
+@app.route("/enviar-alerta-resend", methods=["POST"])
+def enviar_alerta_resend():
+    data = request.json
+
+    correo = data.get("email")
+    asunto = data.get("subject", "Notificación")
+    mensaje = data.get("message", "Mensaje desde Render")
+
+    if not correo:
+        return jsonify({"error": "Falta el email"}), 400
+
+    try:
+        # Evita WORKER TIMEOUT
+        threading.Thread(target=enviar_correo_resend, args=(correo, asunto, mensaje)).start()
+
+        return jsonify({
+            "status": "ok",
+            "msg": "Correo enviado (async)"
+        })
 
     except Exception as e:
         return jsonify({
-            "success": False,
-            "error": str(e)
+            "status": "error",
+            "msg": str(e)
         }), 500
 
-
-# ==============================
-# 🧪 DEBUG
-# ==============================
-@app.route("/debug-env")
-def debug_env():
-    return jsonify({
-        "EMAIL_USER": os.getenv("EMAIL_USER"),
-        "EMAIL_PASS_EXISTS": bool(os.getenv("EMAIL_PASS")),
-        "DB_SERVER": os.getenv("DB_SERVER"),
-    })
-
-
-# ==============================
-# 🚀 RUN
-# ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
